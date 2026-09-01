@@ -1,17 +1,17 @@
-## `telegram-deepseek-bot` Parameter Usage Guide
+## `MuseBot` Parameter Usage Guide
 
-This document provides a detailed overview of the various configuration parameters for running `telegram-deepseek-bot`, helping users deploy and utilize it flexibly according to their needs.
+This document provides a detailed overview of the various configuration parameters for running `MuseBot`, helping users deploy and utilize it flexibly according to their needs.
 
 ### Configuration Parameters (`conf param`)
 
-`telegram-deepseek-bot` is configured via command-line parameters. Below are examples of parameter usage for different scenarios:
+`MuseBot` is configured via command-line parameters. Below are examples of parameter usage for different scenarios:
 
 #### 1\. Basic Configuration (`basic`)
 
 These are the most essential parameters required to run the bot, connecting it to Telegram and the DeepSeek API.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx
 ```
@@ -24,7 +24,7 @@ These are the most essential parameters required to run the bot, connecting it t
 If you need to persist chat history or user data, you can use a MySQL database.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -db_type=mysql \
@@ -39,7 +39,7 @@ If you need to persist chat history or user data, you can use a MySQL database.
 Use this configuration if your network environment requires accessing Telegram or DeepSeek API through a proxy.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -telegram_proxy=http://127.0.0.1:7890 \
@@ -54,7 +54,7 @@ Use this configuration if your network environment requires accessing Telegram o
 In addition to DeepSeek, the bot also supports using OpenAI models.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -type=openai \
 -openai_token=sk-xxxx
@@ -68,7 +68,7 @@ In addition to DeepSeek, the bot also supports using OpenAI models.
 The bot also supports using Google Gemini models.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -type=gemini \
 -gemini_token=xxxxx
@@ -82,7 +82,7 @@ The bot also supports using Google Gemini models.
 Integrate with the OpenRouter platform to use various models it provides.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -type=openrouter \
 -openrouter_token=sk-or-v1-xxxx
@@ -91,12 +91,26 @@ Integrate with the OpenRouter platform to use various models it provides.
 * `-type`: Model type, set to `openrouter`.
 * `-openrouter_token`: Your OpenRouter API Token.
 
-#### 7\. Photo Identification (`identify photo`)
+#### 7\. OrcaRouter Model Support (`orcarouter`)
+
+Integrate with the OrcaRouter gateway to use 150+ models from OpenAI, Anthropic, Google, DeepSeek, Qwen and others behind a single endpoint and API key. Model IDs are namespaced, e.g. `orcarouter/auto` for the per-request virtual router.
+
+```bash
+./MuseBot \
+-telegram_bot_token=xxxx \
+-type=orcarouter \
+-orcarouter_token=sk-orca-xxxx
+```
+
+* `-type`: Model type, set to `orcarouter`.
+* `-orcarouter_token`: Your OrcaRouter API Key.
+
+#### 8\. Photo Identification (`identify photo`)
 
 To integrate with VolcEngine's photo identification feature, you'll need to provide your VolcEngine AK/SK.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -volc_ak=xxx \
@@ -108,12 +122,12 @@ To integrate with VolcEngine's photo identification feature, you'll need to prov
 
 For more details, please refer to: [VolcEngine Image Recognition Documentation](https://www.volcengine.com/docs/6790/116987)
 
-#### 8\. Voice Identification (`identify voice`)
+#### 9\. Voice Identification (`identify voice`)
 
 To integrate with VolcEngine's voice recognition feature.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -audio_app_id=xxx \
@@ -127,41 +141,41 @@ To integrate with VolcEngine's voice recognition feature.
 
 For more details, please refer to: [VolcEngine Voice Recognition Documentation](https://www.volcengine.com/docs/6561/80816)
 
-#### 9\. MCP (`mcp`)
+#### 10\. MCP (`mcp`)
 
 If your bot needs to use Amap (Gaode Map) related tools, such as geolocation queries.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -use_tools=true
 ```
 * `-use_tools`: Enables tool usage functionality, set to `true` default is `false`.
 
-#### 10\. RAG (Retrieval Augmented Generation) - ChromaDB (`rag chroma`)
+#### 11\. RAG (Retrieval Augmented Generation) - ChromaDB (`rag milvus`)
 
 To perform RAG with ChromaDB, you'll need to use OpenAI's Embedding service.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -openai_token=sk-xxxx \
 -embedding_type=openai \
--vector_db_type=chroma
+-vector_db_type=milvus
 ```
 
 * `-openai_token`: Your OpenAI API Token (for embedding).
 * `-embedding_type`: Embedding type, set to `openai`.
 * `-vector_db_type`: Vector database type, set to `chroma`.
 
-#### 11\. RAG (Retrieval Augmented Generation) - Milvus (`rag milvus`)
+#### 12\. RAG (Retrieval Augmented Generation) - Milvus (`rag milvus`)
 
 To perform RAG with Milvus, you'll need to use Gemini's Embedding service.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -gemini_token=xxx \
@@ -173,12 +187,12 @@ To perform RAG with Milvus, you'll need to use Gemini's Embedding service.
 * `-embedding_type`: Embedding type, set to `gemini`.
 * `-vector_db_type`: Vector database type, set to `milvus`.
 
-#### 12\. RAG (Retrieval Augmented Generation) - Weaviate (`rag weaviate`)
+#### 13\. RAG (Retrieval Augmented Generation) - Weaviate (`rag weaviate`)
 
 To perform RAG with Weaviate, you'll need to use Ernie's Embedding service.
 
 ```bash
-./telegram-deepseek-bot \
+./MuseBot \
 -telegram_bot_token=xxxx \
 -deepseek_token=sk-xxx \
 -ernie_ak=xxx \

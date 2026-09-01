@@ -5,27 +5,33 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
-	"time"
-	
-	"github.com/yincongcyincong/telegram-deepseek-bot/conf"
-	"github.com/yincongcyincong/telegram-deepseek-bot/i18n"
-	"github.com/yincongcyincong/telegram-deepseek-bot/logger"
-	"github.com/yincongcyincong/telegram-deepseek-bot/param"
+
+	"github.com/sashabaranov/go-openai"
+	"github.com/yincongcyincong/MuseBot/conf"
+	"github.com/yincongcyincong/MuseBot/i18n"
+	"github.com/yincongcyincong/MuseBot/logger"
+	"github.com/yincongcyincong/MuseBot/metrics"
+	"github.com/yincongcyincong/MuseBot/param"
 )
 
 var (
 	jsonRe = regexp.MustCompile(`(?s)\{[\s\r\n]*"plan"\s*:\s*\[.*?][\s\r\n]*}`)
 )
 
-type DeepseekTaskReq struct {
+type LLMTaskReq struct {
 	MessageChan chan *param.MsgInfo
+	HTTPMsgChan chan string
 	Content     string
 	Model       string
 	Token       int
-	
+	PerMsgLen   int
+
 	UserId string
-	ChatId int64
-	MsgId  int
+	ChatId string
+	MsgId  string
+
+	Cs  *param.ContextState
+	Ctx context.Context
 }
 
 type Task struct {
@@ -43,11 +49,8 @@ type TaskResult struct {
 }
 
 // ExecuteTask execute task command
-func (d *DeepseekTaskReq) ExecuteTask() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer cancel()
-	
-	logger.Info("task content", "content", d.Content)
+func (d *LLMTaskReq) ExecuteTask() error {
+	logger.InfoCtx(d.Ctx, "task content", "content", d.Content)
 	taskParam := make(map[string]interface{})
 	taskParam["assign_param"] = make([]map[string]string, 0)
 	taskParam["user_task"] = d.Content
@@ -59,147 +62,164 @@ func (d *DeepseekTaskReq) ExecuteTask() error {
 		})
 		return true
 	})
-	
-	prompt := i18n.GetMessage(*conf.BaseConfInfo.Lang, "assign_task_prompt", taskParam)
+
+	prompt := i18n.GetMessage("assign_task_prompt", taskParam)
 	llm := NewLLM(WithUserId(d.UserId), WithChatId(d.ChatId), WithMsgId(d.MsgId),
-		WithMessageChan(d.MessageChan), WithContent(prompt))
-	llm.LLMClient.GetUserMessage(prompt)
+		WithMessageChan(d.MessageChan), WithContent(prompt), WithHTTPMsgChan(d.HTTPMsgChan),
+		WithPerMsgLen(d.PerMsgLen), WithContext(d.Ctx), WithCS(d.Cs))
+	llm.GetMessages(d.UserId, prompt)
 	llm.LLMClient.GetModel(llm)
-	c, err := llm.LLMClient.SyncSend(ctx, llm)
+
+	metrics.APIRequestCount.WithLabelValues(llm.Model).Inc()
+	c, err := llm.LLMClient.SyncSend(d.Ctx, llm)
 	if err != nil {
-		logger.Error("get message fail", "err", err)
+		logger.ErrorCtx(d.Ctx, "get message fail", "err", err)
 		return err
 	}
-	
-	d.Token += llm.Token
-	
+
+	d.Token += llm.Cs.Token
+
 	matches := jsonRe.FindAllString(c, -1)
 	plans := new(TaskInfo)
 	for _, match := range matches {
 		err = json.Unmarshal([]byte(match), &plans)
 		if err != nil {
-			logger.Warn("json umarshal fail", "err", err)
+			logger.WarnCtx(d.Ctx, "json umarshal fail", "err", err)
 		}
 	}
-	
+
+	logger.InfoCtx(d.Ctx, "task plan", "plan", plans)
+
 	if len(plans.Plan) == 0 {
-		logger.Info("no plan created!")
-		
+		logger.InfoCtx(d.Ctx, "no plan created!")
+
 		finalLLM := NewLLM(WithUserId(d.UserId), WithChatId(d.ChatId), WithMsgId(d.MsgId),
-			WithMessageChan(d.MessageChan), WithContent(d.Content))
-		finalLLM.LLMClient.GetUserMessage(c)
+			WithMessageChan(d.MessageChan), WithContent(d.Content), WithHTTPMsgChan(d.HTTPMsgChan),
+			WithPerMsgLen(d.PerMsgLen), WithContext(d.Ctx))
+		finalLLM.LLMClient.GetMessage(openai.ChatMessageRoleUser, c)
 		finalLLM.LLMClient.GetModel(finalLLM)
-		err = finalLLM.LLMClient.Send(ctx, finalLLM)
+
+		metrics.APIRequestCount.WithLabelValues(finalLLM.Model).Inc()
+		err = finalLLM.LLMClient.Send(d.Ctx, finalLLM)
 		if err != nil {
-			logger.Error("request summary fail", "err", err)
+			logger.ErrorCtx(d.Ctx, "request summary fail", "err", err)
 		}
 		return err
 	}
-	
-	llm.LLMClient.GetAssistantMessage(c)
-	err = d.loopTask(ctx, plans, c, llm, 0)
+
+	llm.DirectSendMsg(c, false)
+	llm.LLMClient.GetMessage(openai.ChatMessageRoleAssistant, c)
+	err = d.loopTask(d.Ctx, plans, c, llm, 0)
 	if err != nil {
-		logger.Error("loopTask fail", "err", err)
+		logger.ErrorCtx(d.Ctx, "loopTask fail", "err", err)
 		return err
 	}
-	
+
 	// summary
 	summaryParam := make(map[string]interface{})
 	summaryParam["user_task"] = d.Content
-	summaryPrompt := i18n.GetMessage(*conf.BaseConfInfo.Lang, "summary_task_prompt", summaryParam)
-	llm.LLMClient.GetUserMessage(summaryPrompt)
+	summaryPrompt := i18n.GetMessage("summary_task_prompt", summaryParam)
+	llm.LLMClient.GetMessage(openai.ChatMessageRoleUser, summaryPrompt)
 	llm.Content = summaryPrompt
-	err = llm.LLMClient.Send(ctx, llm)
+
+	metrics.APIRequestCount.WithLabelValues(llm.Model).Inc()
+	err = llm.LLMClient.Send(d.Ctx, llm)
 	if err != nil {
-		logger.Error("request summary fail", "err", err)
+		logger.ErrorCtx(d.Ctx, "request summary fail", "err", err)
+		return err
 	}
-	
+
+	err = llm.InsertOrUpdate()
+	if err != nil {
+		logger.ErrorCtx(d.Ctx, "insertOrUpdate fail", "err", err)
+	}
 	return err
 }
 
 // loopTask loop task
-func (d *DeepseekTaskReq) loopTask(ctx context.Context, plans *TaskInfo, lastPlan string, llm *LLM, loop int) error {
+func (d *LLMTaskReq) loopTask(ctx context.Context, plans *TaskInfo, lastPlan string, llm *LLM, loop int) error {
 	if loop > MostLoop {
 		return errors.New("too many loops")
 	}
-	
+
 	completeTasks := map[string]bool{}
 	taskLLM := NewLLM(WithUserId(d.UserId), WithChatId(d.ChatId), WithMsgId(d.MsgId),
-		WithMessageChan(d.MessageChan))
+		WithMessageChan(d.MessageChan), WithHTTPMsgChan(d.HTTPMsgChan), WithPerMsgLen(d.PerMsgLen),
+		WithContext(d.Ctx))
 	for _, plan := range plans.Plan {
 		toolInter, ok := conf.TaskTools.Load(plan.Name)
 		var tool *conf.AgentInfo
 		if ok {
 			tool = toolInter.(*conf.AgentInfo)
 		}
-		o := WithTaskTools(tool)
-		o(taskLLM)
-		taskLLM.LLMClient.GetUserMessage(plan.Description)
+		WithTaskTools(tool)(taskLLM)
+		taskLLM.LLMClient.GetMessage(openai.ChatMessageRoleUser, plan.Description)
 		taskLLM.Content = plan.Description
-		
-		logger.Info("execute task", "task", plan.Name)
+		taskLLM.LLMClient.GetModel(taskLLM)
+		logger.InfoCtx(d.Ctx, "execute task", "task", plan.Name, "task desc", plan.Description)
 		err := d.requestTask(ctx, taskLLM, plan)
 		if err != nil {
 			return err
 		}
-		d.Token += taskLLM.Token
+		d.Token += taskLLM.Cs.Token
 		completeTasks[plan.Description] = true
 	}
-	
+
 	llm.LLMClient.AppendMessages(taskLLM.LLMClient)
-	
+
 	taskParam := map[string]interface{}{
 		"user_task":      d.Content,
 		"complete_tasks": completeTasks,
 		"last_plan":      lastPlan,
 	}
-	
-	llm.LLMClient.GetUserMessage(i18n.GetMessage(*conf.BaseConfInfo.Lang, "loop_task_prompt", taskParam))
+
+	llm.LLMClient.GetMessage(openai.ChatMessageRoleUser, i18n.GetMessage("loop_task_prompt", taskParam))
+	llm.LLMClient.GetModel(llm)
+
+	metrics.APIRequestCount.WithLabelValues(llm.Model).Inc()
 	c, err := llm.LLMClient.SyncSend(ctx, llm)
 	if err != nil {
-		logger.Error("ChatCompletionStream error", "err", err)
+		logger.ErrorCtx(d.Ctx, "ChatCompletionStream error", "err", err)
 		return err
 	}
-	
+
 	if len(c) == 0 {
-		logger.Error("response is emtpy", "response", c)
+		logger.ErrorCtx(d.Ctx, "response is emtpy", "response", c)
 		return errors.New("response is emtpy")
 	}
-	
-	d.Token += llm.Token
-	
+
+	d.Token += llm.Cs.Token
+
 	matches := jsonRe.FindAllString(c, -1)
 	plans = new(TaskInfo)
 	for _, match := range matches {
 		err := json.Unmarshal([]byte(match), &plans)
 		if err != nil {
-			logger.Error("json umarshal fail", "err", err)
+			logger.ErrorCtx(d.Ctx, "json umarshal fail", "err", err)
 		}
 	}
-	
-	llm.LLMClient.GetAssistantMessage(c)
-	
+
+	llm.LLMClient.GetMessage(openai.ChatMessageRoleAssistant, c)
+
 	if len(plans.Plan) == 0 {
 		return nil
 	}
-	
+
 	return d.loopTask(ctx, plans, c, llm, loop+1)
 }
 
 // requestTask request task
-func (d *DeepseekTaskReq) requestTask(ctx context.Context, llm *LLM, plan *Task) error {
-	
+func (d *LLMTaskReq) requestTask(ctx context.Context, llm *LLM, plan *Task) error {
+	metrics.APIRequestCount.WithLabelValues(llm.Model).Inc()
 	c, err := llm.LLMClient.SyncSend(ctx, llm)
 	if err != nil {
-		logger.Error("ChatCompletionStream error", "err", err)
+		logger.ErrorCtx(d.Ctx, "ChatCompletionStream error", "err", err)
 		return err
 	}
-	
-	// deepseek response merge into msg
-	if c == "" {
-		c = plan.Name + " is completed"
-	}
-	llm.LLMClient.GetAssistantMessage(c)
-	
+
+	// llm response merge into msg
+	c += "\n\n" + plan.Name + " is completed"
+	llm.LLMClient.GetMessage(openai.ChatMessageRoleAssistant, c)
+
 	return nil
 }

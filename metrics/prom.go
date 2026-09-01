@@ -4,51 +4,83 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// define all metrics
 var (
-	TotalUsers = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "app_total_users",
-			Help: "Total number of unique users.",
-		},
-	)
-	
-	TotalRecords = prometheus.NewCounter(
+	APIRequestCount = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "app_total_records",
-			Help: "Total number of records.",
+			Name: "api_request_total",
+			Help: "Total number of API requests, labeled by model name.",
 		},
+		[]string{"model"},
 	)
-	
-	TotalTokens = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "app_total_tokens",
-			Help: "Total number of tokens.",
-		},
-	)
-	
-	ConversationDuration = prometheus.NewHistogram(
+
+	APIRequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "app_conversation_duration_seconds",
-			Help:    "Duration of conversations in seconds.",
-			Buckets: prometheus.DefBuckets, // default: 0.005, 0.01, 0.025, 0.05, ..., 10, 30, 60
-		},
-	)
-	
-	ImageDuration = prometheus.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "generate_image_duration_seconds",
-			Help:    "generate image API requests in seconds.",
+			Name:    "api_request_duration_seconds",
+			Help:    "Histogram of API request durations in seconds, labeled by model name.",
 			Buckets: prometheus.DefBuckets,
 		},
+		[]string{"model"},
+	)
+
+	AppRequestCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "app_request_total",
+			Help: "Total number of API requests per app.",
+		},
+		[]string{"app"},
+	)
+
+	HTTPRequestCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_request_total",
+			Help: "Total number of HTTP requests.",
+		},
+		[]string{"path"},
+	)
+
+	HTTPResponseCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_response_total",
+			Help: "Total number of HTTP responses.",
+		},
+		[]string{"path", "code"},
+	)
+
+	HTTPResponseDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_response_duration_seconds",
+			Help:    "Histogram of HTTP response durations in seconds.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"path", "code"},
+	)
+
+	MCPRequestCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mcp_request_total",
+			Help: "Total number of MCP requests.",
+		},
+		[]string{"mcp_service", "mcp_func"},
+	)
+
+	MCPRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "mcp_request_duration_seconds",
+			Help:    "Histogram of MCP request durations in seconds.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"mcp_service", "mcp_func"},
 	)
 )
 
-// RegisterMetrics register metrics
+// RegisterMetrics 注册指标
 func RegisterMetrics() {
-	prometheus.MustRegister(TotalUsers)
-	prometheus.MustRegister(TotalRecords)
-	prometheus.MustRegister(TotalTokens)
-	prometheus.MustRegister(ConversationDuration)
-	prometheus.MustRegister(ImageDuration)
+	prometheus.MustRegister(APIRequestCount)
+	prometheus.MustRegister(APIRequestDuration)
+	prometheus.MustRegister(AppRequestCount)
+	prometheus.MustRegister(HTTPRequestCount)
+	prometheus.MustRegister(MCPRequestCount)
+	prometheus.MustRegister(HTTPResponseCount)
+	prometheus.MustRegister(HTTPResponseDuration)
+	prometheus.MustRegister(MCPRequestDuration)
 }

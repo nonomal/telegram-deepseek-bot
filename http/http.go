@@ -1,16 +1,26 @@
 package http
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
-	
+	"os"
+	"time"
+
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/yincongcyincong/telegram-deepseek-bot/conf"
-	"github.com/yincongcyincong/telegram-deepseek-bot/logger"
+	"github.com/yincongcyincong/MuseBot/conf"
+	"github.com/yincongcyincong/MuseBot/logger"
+	"github.com/yincongcyincong/MuseBot/metrics"
+)
+
+var (
+	FilterPath = map[string]bool{
+		"/pong": true,
+	}
 )
 
 type HTTPServer struct {
@@ -18,7 +28,8 @@ type HTTPServer struct {
 }
 
 func InitHTTP() {
-	pprofServer := NewHTTPServer(fmt.Sprintf(":%d", *conf.BaseConfInfo.HTTPPort))
+	initImg()
+	pprofServer := NewHTTPServer(fmt.Sprintf("%s", conf.BaseConfInfo.HTTPHost))
 	pprofServer.Start()
 }
 
@@ -36,32 +47,58 @@ func NewHTTPServer(addr string) *HTTPServer {
 func (p *HTTPServer) Start() {
 	go func() {
 		logger.Info("Starting pprof server on", "addr", p.Addr)
-		http.Handle("/metrics", promhttp.Handler())
-		
-		http.HandleFunc("/user/token/add", AddUserToken)
-		
-		http.HandleFunc("/conf/update", UpdateConf)
-		http.HandleFunc("/conf/get", GetConf)
-		http.HandleFunc("/command/get", GetCommand)
-		http.HandleFunc("/mcp/get", GetMCPConf)
-		http.HandleFunc("/mcp/update", UpdateMCPConf)
-		http.HandleFunc("/mcp/disable", DisableMCPConf)
-		http.HandleFunc("/mcp/delete", DeleteMCPConf)
-		http.HandleFunc("/mcp/sync", SyncMCPConf)
-		
-		http.HandleFunc("/user/list", GetUsers)
-		http.HandleFunc("/record/list", GetRecords)
-		
-		http.HandleFunc("/pong", PongHandler)
-		
-		http.HandleFunc("/communicate", Communicate)
-		
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+
+		mux.HandleFunc("/user/token/add", AddUserToken)
+
+		mux.HandleFunc("/conf/update", UpdateConf)
+		mux.HandleFunc("/conf/get", GetConf)
+		mux.HandleFunc("/command/get", GetCommand)
+		mux.HandleFunc("/restart", Restart)
+		mux.HandleFunc("/stop", Stop)
+		mux.HandleFunc("/log", Log)
+
+		mux.HandleFunc("/mcp/get", GetMCPConf)
+		mux.HandleFunc("/mcp/update", UpdateMCPConf)
+		mux.HandleFunc("/mcp/disable", DisableMCPConf)
+		mux.HandleFunc("/mcp/delete", DeleteMCPConf)
+		mux.HandleFunc("/mcp/sync", SyncMCPConf)
+
+		mux.HandleFunc("/user/list", GetUsers)
+		mux.HandleFunc("/user/insert/record", InsertUserRecords)
+		mux.HandleFunc("/record/list", GetRecords)
+
+		mux.HandleFunc("/rag/list", GetRagFile)
+		mux.HandleFunc("/rag/delete", DeleteRagFile)
+		mux.HandleFunc("/rag/create", CreateRagFile)
+		mux.HandleFunc("/rag/get", GetRagFileContent)
+		mux.HandleFunc("/rag/clear", ClearAllVectorData)
+
+		mux.HandleFunc("/pong", PongHandler)
+		mux.HandleFunc("/dashboard", DashboardHandler)
+
+		mux.HandleFunc("/communicate", Communicate)
+		mux.HandleFunc("/com/wechat", ComWechatComm)
+		mux.HandleFunc("/wechat", WechatComm)
+		mux.HandleFunc("/qq", QQBotComm)
+		mux.HandleFunc("/onebot", OneBot)
+
+		mux.HandleFunc("/cron/create", CreateCron)
+		mux.HandleFunc("/cron/update", UpdateCron)
+		mux.HandleFunc("/cron/update_status", UpdateCronStatus)
+		mux.HandleFunc("/cron/delete", DeleteCron)
+		mux.HandleFunc("/cron/list", GetCrons)
+
+		mux.HandleFunc("/image", imageHandler)
+
+		wrappedMux := WithRequestContext(mux)
+
 		var err error
-		if conf.BaseConfInfo.CrtFile == nil || conf.BaseConfInfo.KeyFile == nil ||
-			*conf.BaseConfInfo.CrtFile == "" || *conf.BaseConfInfo.KeyFile == "" {
-			err = http.ListenAndServe(p.Addr, nil)
+		if conf.BaseConfInfo.CrtFile == "" || conf.BaseConfInfo.KeyFile == "" {
+			err = http.ListenAndServe(p.Addr, wrappedMux)
 		} else {
-			err = runTLSServer()
+			err = runTLSServer(wrappedMux)
 		}
 		if err != nil {
 			logger.Fatal("pprof server failed", "err", err)
@@ -69,36 +106,73 @@ func (p *HTTPServer) Start() {
 	}()
 }
 
-func runTLSServer() error {
-	caCert, err := ioutil.ReadFile(*conf.BaseConfInfo.CaFile)
+func runTLSServer(wrappedMux http.Handler) error {
+	caCert, err := os.ReadFile(conf.BaseConfInfo.CaFile)
 	if err != nil {
 		return err
 	}
-	
+
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(caCert)
-	
-	cert, err := tls.LoadX509KeyPair(*conf.BaseConfInfo.CrtFile, *conf.BaseConfInfo.KeyFile)
+
+	cert, err := tls.LoadX509KeyPair(conf.BaseConfInfo.CrtFile, conf.BaseConfInfo.KeyFile)
 	if err != nil {
 		return err
 	}
-	
+
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    caCertPool,
 		MinVersion:   tls.VersionTLS12,
 	}
-	
+
 	server := &http.Server{
-		Addr:      fmt.Sprintf(":%d", *conf.BaseConfInfo.HTTPPort),
+		Addr:      fmt.Sprintf("%s", conf.BaseConfInfo.HTTPHost),
 		TLSConfig: tlsConfig,
+		Handler:   wrappedMux,
 	}
-	
-	err = server.ListenAndServeTLS("", "") // cert/key 已通过 TLSConfig 提供
+
+	err = server.ListenAndServeTLS("", "")
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
+}
+
+func WithRequestContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		isSSE := r.Header.Get("Accept") == "text/event-stream"
+
+		var cancel context.CancelFunc
+		if !isSSE {
+			ctx, cancel = context.WithTimeout(ctx, 15*time.Minute)
+			defer cancel()
+		}
+
+		logID := r.Header.Get("LogId")
+		if logID == "" {
+			logID = uuid.New().String()
+		}
+		ctx = context.WithValue(ctx, "log_id", logID)
+
+		if conf.BaseConfInfo.BotName != "" {
+			ctx = context.WithValue(ctx, "bot_name", conf.BaseConfInfo.BotName)
+		}
+
+		ctx = context.WithValue(ctx, "start_time", time.Now())
+
+		r = r.WithContext(ctx)
+
+		if !FilterPath[r.URL.Path] {
+			logger.InfoCtx(ctx, "request start", "path", r.URL.Path)
+		}
+
+		next.ServeHTTP(w, r)
+
+		metrics.HTTPRequestCount.WithLabelValues(r.URL.Path).Inc()
+	})
 }

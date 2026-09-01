@@ -7,7 +7,7 @@
 你可以使用以下命令启动 Discord 模式：
 
 ```bash
-./telegram-deepseek-bot-darwin-amd64 \
+./MuseBot-darwin-amd64 \
 -discord_bot_token=xxx \
 -deepseek_token=sk-xxx \
 -volc_ak=xxx \
@@ -22,7 +22,7 @@
 * `volc_ak` / `volc_sk`：用于生成图片和视频的火山引擎 Access Key 和 Secret Key（使用 `/photo` 和 `/video` 命令时必填）
 * `vol_token`：火山引擎视频功能使用的 Token
 
-其他参数请使用首页[readme](https://github.com/yincongcyincong/telegram-deepseek-bot)
+其他参数请使用首页[readme](https://github.com/yincongcyincong/MuseBot)
 
 ## 💬 使用方式
 
@@ -40,15 +40,14 @@
 * `/video`：生成视频。⚠️ 需要配置 `volc_ak` 和 `volc_sk`
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/24bdde29-685c-4af7-8834-873dbc14b84f" />
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/b9e85a58-58fe-4e45-ab44-52b73bcaea59" />
-  
-* `/balance`：查看当前 DeepSeek Token 剩余额度
-<img width="400" alt="image" src="https://github.com/user-attachments/assets/bb20e8fd-470f-4c70-b584-abc1fb5855d2" />
-  
+
 * `/state`：查看当前会话状态（包括模型、角色设定等）
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/bf57f0fa-add1-4cb2-8e82-7bd484a880b8" />
   
 * `/clear`：清除当前聊天上下文（重置对话）
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/ebba556f-267a-4052-a3a3-3eab019eb4f4" />
+
+* `/talk` 直接与火山大模型实时对话 (文档)[https://www.volcengine.com/docs/6561/1594356]
 
 ### 群聊模式
 

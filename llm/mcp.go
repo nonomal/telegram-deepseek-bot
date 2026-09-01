@@ -1,14 +1,13 @@
 package llm
 
 import (
-	"context"
 	"encoding/json"
 	"regexp"
-	"time"
-	
-	"github.com/yincongcyincong/telegram-deepseek-bot/conf"
-	"github.com/yincongcyincong/telegram-deepseek-bot/i18n"
-	"github.com/yincongcyincong/telegram-deepseek-bot/logger"
+
+	"github.com/yincongcyincong/MuseBot/conf"
+	"github.com/yincongcyincong/MuseBot/i18n"
+	"github.com/yincongcyincong/MuseBot/logger"
+	"github.com/yincongcyincong/MuseBot/metrics"
 )
 
 var (
@@ -20,11 +19,8 @@ type McpResult struct {
 }
 
 // ExecuteMcp execute mcp request
-func (d *DeepseekTaskReq) ExecuteMcp() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer cancel()
-	
-	logger.Info("mcp content", "content", d.Content)
+func (d *LLMTaskReq) ExecuteMcp() error {
+	logger.InfoCtx(d.Ctx, "mcp content", "content", d.Content)
 	taskParam := make(map[string]interface{})
 	taskParam["assign_param"] = make([]map[string]string, 0)
 	taskParam["user_task"] = d.Content
@@ -36,29 +32,36 @@ func (d *DeepseekTaskReq) ExecuteMcp() error {
 		})
 		return true
 	})
-	
+
 	// get mcp request
 	llm := NewLLM(WithChatId(d.ChatId), WithMsgId(d.MsgId), WithUserId(d.UserId),
-		WithMessageChan(d.MessageChan), WithContent(d.Content))
-	
-	prompt := i18n.GetMessage(*conf.BaseConfInfo.Lang, "mcp_prompt", taskParam)
-	llm.LLMClient.GetUserMessage(prompt)
+		WithMessageChan(d.MessageChan), WithContent(d.Content), WithHTTPMsgChan(d.HTTPMsgChan),
+		WithPerMsgLen(d.PerMsgLen), WithContext(d.Ctx), WithCS(d.Cs))
+
+	prompt := i18n.GetMessage("mcp_prompt", taskParam)
+	llm.GetMessages(d.UserId, prompt)
 	llm.Content = prompt
-	c, err := llm.LLMClient.SyncSend(ctx, llm)
+	llm.LLMClient.GetModel(llm)
+
+	metrics.APIRequestCount.WithLabelValues(llm.Model).Inc()
+	c, err := llm.LLMClient.SyncSend(d.Ctx, llm)
 	if err != nil {
-		logger.Error("get message fail", "err", err)
+		logger.ErrorCtx(d.Ctx, "get message fail", "err", err)
 		return err
 	}
-	
+
 	matches := mcpRe.FindAllString(c, -1)
 	mcpResult := new(McpResult)
 	for _, match := range matches {
 		err := json.Unmarshal([]byte(match), mcpResult)
 		if err != nil {
-			logger.Error("json umarshal fail", "err", err)
+			logger.ErrorCtx(d.Ctx, "json umarshal fail", "err", err)
 		}
 	}
-	
+
+	llm.DirectSendMsg(c, false)
+	logger.InfoCtx(d.Ctx, "mcp plan", "plan", mcpResult)
+
 	// execute mcp request
 	var taskTool *conf.AgentInfo
 	taskToolInter, ok := conf.TaskTools.Load(mcpResult.Agent)
@@ -66,15 +69,24 @@ func (d *DeepseekTaskReq) ExecuteMcp() error {
 		taskTool = taskToolInter.(*conf.AgentInfo)
 	}
 	mcpLLM := NewLLM(WithChatId(d.ChatId), WithMsgId(d.MsgId), WithUserId(d.UserId),
-		WithMessageChan(d.MessageChan), WithContent(d.Content), WithTaskTools(taskTool))
-	mcpLLM.Token += llm.Token
+		WithMessageChan(d.MessageChan), WithContent(d.Content), WithTaskTools(taskTool),
+		WithPerMsgLen(d.PerMsgLen), WithContext(d.Ctx), WithCS(d.Cs))
+	mcpLLM.Cs.Token += llm.Cs.Token
 	mcpLLM.Content = d.Content
-	mcpLLM.LLMClient.GetUserMessage(d.Content)
+	mcpLLM.GetMessages(d.UserId, d.Content)
 	mcpLLM.LLMClient.GetModel(mcpLLM)
-	err = mcpLLM.LLMClient.Send(ctx, mcpLLM)
+
+	metrics.APIRequestCount.WithLabelValues(mcpLLM.Model).Inc()
+	err = mcpLLM.LLMClient.Send(d.Ctx, mcpLLM)
 	if err != nil {
-		logger.Error("execute conversation fail", "err", err)
+		logger.ErrorCtx(d.Ctx, "execute conversation fail", "err", err)
+		return err
 	}
-	
+
+	err = mcpLLM.InsertOrUpdate()
+	if err != nil {
+		logger.ErrorCtx(d.Ctx, "insertOrUpdate fail", "err", err)
+	}
+
 	return err
 }

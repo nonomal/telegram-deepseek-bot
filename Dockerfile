@@ -1,40 +1,90 @@
-# Build stage
-FROM golang:1.24 as builder
+# ----------------------
+# Build stage: compile Go application
+# ----------------------
+FROM golang:1.24 AS builder
 
 WORKDIR /app
 
-# First copy only dependency files for better layer caching
+# 安装构建依赖 (libopus 开发包 + pkg-config)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libopus-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency files first for better caching
 COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy the rest of the application
 COPY . .
 
-# Build the application
-RUN go build -ldflags="-s -w" -o telegram-deepseek-bot main.go
+# Build the Go application
+RUN go build -ldflags="-s -w" -o MuseBot main.go
+RUN go build -ldflags="-s -w" -o MuseBotAdmin admin/main.go
 
-# Runtime stage
-FROM debian:stable-slim
 
-# Install certificates
+# ----------------------
+# FFmpeg download stage
+# ----------------------
+FROM debian:stable-slim AS ffmpeg-builder
+
+WORKDIR /tmp
+
+# Install required tools (wget + xz-utils for tar.xz extraction)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends wget ca-certificates xz-utils && \
     rm -rf /var/lib/apt/lists/*
+
+# Download and extract static FFmpeg binaries
+RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz && \
+    mkdir -p /tmp/ffmpeg && \
+    tar -xJf ffmpeg-release-amd64-static.tar.xz -C /tmp/ffmpeg && \
+    cp /tmp/ffmpeg/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ && \
+    cp /tmp/ffmpeg/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    rm -rf /tmp/ffmpeg
+
+# ----------------------
+# Runtime stage
+# ----------------------
+FROM debian:stable-slim
 
 WORKDIR /app
 
-# Create necessary directories
-RUN mkdir -p ./conf/i18n ./conf/mcp
+# 安装运行时依赖 (证书 + nodejs + opus 运行库)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl libopus0 supervisor && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy only necessary files from builder
-COPY --from=builder /app/telegram-deepseek-bot .
+ENV PATH="/usr/share/nodejs/corepack/shims:$PATH"
+
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create required directories
+RUN mkdir -p ./conf/i18n ./conf/mcp ./conf/img/ ./adminui
+
+# Copy compiled Go application
+COPY --from=builder /app/MuseBot .
+COPY --from=builder /app/MuseBotAdmin .
 COPY --from=builder /app/conf/i18n/ ./conf/i18n/
 COPY --from=builder /app/conf/mcp/ ./conf/mcp/
+COPY --from=builder /app/conf/img/ ./conf/img/
+COPY --from=builder /app/admin/adminui/ ./conf/adminui/
 
-# (Optional) Create non-root user for security
+# Copy FFmpeg binaries
+COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/ffprobe
+
+# Create non-root user for security
 RUN useradd -m appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# Runtime command
-ENTRYPOINT ["./telegram-deepseek-bot"]
+# Expose application port
+EXPOSE 36060
+EXPOSE 18080
+
+# Set entrypoint
+ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf", "-n"]

@@ -10,20 +10,28 @@ import {
     MessageSquare,
     ChevronFirst,
     ChevronLast,
+    ScrollText,
+    DatabaseIcon,
+    Timer,
 } from "lucide-react";
+import {useTranslation} from "react-i18next";
 
 export default function Sidebar() {
     const location = useLocation();
     const [collapsed, setCollapsed] = useState(false);
+    const { t } = useTranslation();
 
     const links = [
-        { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-        { path: "/admins", label: "Users", icon: Users },
-        { path: "/bot", label: "Bots", icon: Bot },
-        { path: "/mcp", label: "MCP", icon: Database },
-        { path: "/users", label: "BotUsers", icon: UserCircle },
-        { path: "/chats", label: "BotChats", icon: MessageCircle },
-        { path: "/communicate", label: "Chat", icon: MessageSquare }, // 改了图标
+        { path: "/dashboard", label: t("dashboard"), icon: LayoutDashboard },
+        { path: "/admins", label: t("admin_users"), icon: Users },
+        { path: "/bot", label: t("bots"), icon: Bot },
+        { path: "/mcp", label: t("mcp"), icon: Database },
+        { path: "/cron", label: t("cron"), icon: Timer },
+        { path: "/users", label: t("bot_users"), icon: UserCircle },
+        { path: "/chats", label: t("bot_chats"), icon: MessageCircle },
+        { path: "/communicate", label: t("chat"), icon: MessageSquare },
+        { path: "/rag", label: t("rag"), icon: DatabaseIcon },
+        { path: "/log", label: t("log"), icon: ScrollText },
     ];
 
     return (
@@ -32,7 +40,7 @@ export default function Sidebar() {
                 collapsed ? "w-20" : "w-60"
             }`}
         >
-            <div className="flex justify-center mb-6">
+            <div className="flex justify-center">
                 <button
                     onClick={() => setCollapsed(!collapsed)}
                     className="text-white p-1 rounded hover:bg-indigo-600 transition"

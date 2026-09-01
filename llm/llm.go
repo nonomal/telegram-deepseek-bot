@@ -1,18 +1,27 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"html/template"
+	"regexp"
+	"strings"
 	"time"
-	
+
 	godeepseek "github.com/cohesion-org/deepseek-go"
 	"github.com/revrost/go-openrouter"
 	"github.com/sashabaranov/go-openai"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
-	"github.com/yincongcyincong/telegram-deepseek-bot/conf"
-	"github.com/yincongcyincong/telegram-deepseek-bot/logger"
-	"github.com/yincongcyincong/telegram-deepseek-bot/param"
-	"github.com/yincongcyincong/telegram-deepseek-bot/utils"
+	"github.com/yincongcyincong/MuseBot/conf"
+	"github.com/yincongcyincong/MuseBot/db"
+	"github.com/yincongcyincong/MuseBot/i18n"
+	"github.com/yincongcyincong/MuseBot/logger"
+	"github.com/yincongcyincong/MuseBot/metrics"
+	"github.com/yincongcyincong/MuseBot/param"
+	"github.com/yincongcyincong/MuseBot/utils"
+	"github.com/yincongcyincong/mcp-client-go/clients"
 	"google.golang.org/genai"
 )
 
@@ -20,7 +29,7 @@ const (
 	OneMsgLen       = 3896
 	FirstSendLen    = 30
 	NonFirstSendLen = 500
-	MostLoop        = 5
+	MostLoop        = 15
 )
 
 var (
@@ -30,127 +39,179 @@ var (
 type LLM struct {
 	MessageChan chan *param.MsgInfo
 	HTTPMsgChan chan string
-	Content     string // question from user
-	Model       string
-	Token       int
-	
-	ChatId int64
-	UserId string
-	MsgId  int
-	
+	Content     string
+	Images      [][]byte
+
+	Model string
+	Cs    *param.ContextState
+
+	ChatId           string
+	UserId           string
+	MsgId            string
+	PerMsgLen        int
+	ContentParameter map[string]string
+
 	LLMClient LLMClient
-	
+
+	Ctx context.Context
+
 	DeepseekTools   []godeepseek.Tool
 	VolTools        []*model.Tool
 	OpenAITools     []openai.Tool
 	GeminiTools     []*genai.Tool
 	OpenRouterTools []openrouter.Tool
-	
+
 	WholeContent string // whole answer from llm
 	LoopNum      int
 }
 
 type LLMClient interface {
-	GetMessages(userId string, prompt string)
-	
 	Send(ctx context.Context, l *LLM) error
-	
-	GetUserMessage(msg string)
-	
-	GetAssistantMessage(msg string)
-	
+
+	GetMessage(role, msg string)
+
+	GetImageMessage(image [][]byte, msg string)
+
+	GetAudioMessage(audio []byte, msg string)
+
 	AppendMessages(client LLMClient)
-	
+
 	SyncSend(ctx context.Context, l *LLM) (string, error)
-	
+
 	GetModel(l *LLM)
 }
 
 func (l *LLM) CallLLM() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	
-	l.LLMClient.GetMessages(l.UserId, l.Content)
-	
-	logger.Info("msg receive", "userID", l.UserId, "prompt", l.Content)
-	
+
+	totalContent := l.GetContent(l.Content)
+	l.InsertCharacter(l.Ctx)
+	l.GetMessages(l.UserId, totalContent)
 	l.LLMClient.GetModel(l)
-	
-	err := l.LLMClient.Send(ctx, l)
+
+	logger.InfoCtx(l.Ctx, "msg receive", "userID", l.UserId, "prompt", totalContent, "type",
+		utils.GetTxtType(db.GetCtxUserInfo(l.Ctx).LLMConfigRaw), "model", l.Model)
+
+	metrics.APIRequestCount.WithLabelValues(l.Model).Inc()
+
+	var err error
+	if conf.BaseConfInfo.IsStreaming {
+		err = l.LLMClient.Send(l.Ctx, l)
+		if err != nil {
+			logger.ErrorCtx(l.Ctx, "Error calling LLM API", "err", err)
+			return err
+		}
+	} else {
+		content, err := l.LLMClient.SyncSend(l.Ctx, l)
+		if err != nil {
+			logger.ErrorCtx(l.Ctx, "Error calling LLM API", "err", err)
+			return err
+		}
+
+		l.MessageChan <- &param.MsgInfo{
+			Content: content,
+		}
+		l.WholeContent = content
+	}
+
+	err = l.InsertOrUpdate()
 	if err != nil {
-		logger.Error("Error calling DeepSeek API", "err", err)
+		logger.ErrorCtx(l.Ctx, "insert or update record", "err", err)
 		return err
 	}
-	
+
 	return nil
 }
 
+func (l *LLM) GetContent(content string) string {
+	return content
+}
+
+func (l *LLM) InsertCharacter(ctx context.Context) {
+	if conf.BaseConfInfo.Character != "" {
+		if l.ContentParameter != nil {
+			tmpl, err := template.New("character").Parse(conf.BaseConfInfo.Character)
+			if err != nil {
+				logger.ErrorCtx(ctx, "parse template fail", "err", err)
+				return
+			}
+
+			var buf bytes.Buffer
+			err = tmpl.Execute(&buf, l.ContentParameter)
+			if err != nil {
+				logger.ErrorCtx(ctx, "exec template fail", "err", err)
+				return
+			}
+
+			logger.InfoCtx(ctx, "character", "character", buf.String())
+			l.LLMClient.GetMessage(openai.ChatMessageRoleSystem, buf.String())
+		}
+	}
+}
+
 func NewLLM(opts ...Option) *LLM {
-	
 	l := new(LLM)
+	l.Cs = new(param.ContextState)
 	for _, opt := range opts {
 		opt(l)
 	}
-	
-	switch *conf.BaseConfInfo.Type {
-	case param.DeepSeek:
-		l.LLMClient = &DeepseekReq{
+
+	switch utils.GetTxtType(db.GetCtxUserInfo(l.Ctx).LLMConfigRaw) {
+	case param.Ollama:
+		l.LLMClient = &OllamaReq{
 			ToolCall:           []godeepseek.ToolCall{},
 			ToolMessage:        []godeepseek.ChatCompletionMessage{},
 			CurrentToolMessage: []godeepseek.ChatCompletionMessage{},
 		}
-	case param.DeepSeekLlava:
-		l.LLMClient = &OllamaDeepseekReq{
-			ToolCall:           []godeepseek.ToolCall{},
-			ToolMessage:        []godeepseek.ChatCompletionMessage{},
-			CurrentToolMessage: []godeepseek.ChatCompletionMessage{},
-		}
-	case param.Gemini:
-		l.LLMClient = &GeminiReq{
-			ToolCall:           []*genai.FunctionCall{},
-			ToolMessage:        []*genai.Content{},
-			CurrentToolMessage: []*genai.Content{},
-		}
-	case param.OpenAi:
+	default:
 		l.LLMClient = &OpenAIReq{
 			ToolCall:           []openai.ToolCall{},
 			ToolMessage:        []openai.ChatCompletionMessage{},
 			CurrentToolMessage: []openai.ChatCompletionMessage{},
 		}
-	case param.OpenRouter:
-		l.LLMClient = &AIRouterReq{
-			ToolCall:           []openrouter.ToolCall{},
-			ToolMessage:        []openrouter.ChatCompletionMessage{},
-			CurrentToolMessage: []openrouter.ChatCompletionMessage{},
-		}
-	case param.Vol:
-		l.LLMClient = &VolReq{
-			ToolCall:           []*model.ToolCall{},
-			ToolMessage:        []*model.ChatCompletionMessage{},
-			CurrentToolMessage: []*model.ChatCompletionMessage{},
-		}
 	}
-	
+
 	return l
 }
 
-func (l *LLM) sendMsg(msgInfoContent *param.MsgInfo, content string) *param.MsgInfo {
+func (l *LLM) DirectSendMsg(content string, ignoreLen bool) {
+	if !ignoreLen && len([]byte(content)) > l.PerMsgLen {
+		content = string([]byte(content)[:l.PerMsgLen])
+	}
+
 	if l.MessageChan != nil {
-		// exceed max telegram one message length
-		if utils.Utf16len(msgInfoContent.Content) > OneMsgLen {
+		l.MessageChan <- &param.MsgInfo{
+			Content:  content,
+			Finished: true,
+		}
+	}
+
+	if l.HTTPMsgChan != nil {
+		l.HTTPMsgChan <- content
+	}
+}
+
+func (l *LLM) SendMsg(msgInfoContent *param.MsgInfo, content string) *param.MsgInfo {
+	if l.MessageChan != nil {
+		if l.PerMsgLen == 0 {
+			l.PerMsgLen = OneMsgLen
+		}
+
+		// exceed max one message length
+		if len([]byte(msgInfoContent.Content)) > l.PerMsgLen {
+			msgInfoContent.Finished = true
 			l.MessageChan <- msgInfoContent
 			msgInfoContent = &param.MsgInfo{
 				SendLen: NonFirstSendLen,
 			}
 		}
-		
+
 		msgInfoContent.Content += content
 		l.WholeContent += content
 		if len(msgInfoContent.Content) > msgInfoContent.SendLen {
 			l.MessageChan <- msgInfoContent
 			msgInfoContent.SendLen += NonFirstSendLen
 		}
-		
+
 		return msgInfoContent
 	} else {
 		l.WholeContent += content
@@ -167,6 +228,114 @@ func (l *LLM) OverLoop() bool {
 	return false
 }
 
+func (l *LLM) InsertOrUpdate() error {
+	if l.Cs.RecordID == 0 {
+		db.InsertMsgRecord(l.Ctx, l.UserId, &db.AQ{
+			Question:   l.Content,
+			Answer:     l.WholeContent,
+			Token:      l.Cs.Token,
+			CreateTime: time.Now().Unix(),
+		}, true)
+		return nil
+	}
+
+	db.InsertMsgRecord(l.Ctx, l.UserId, &db.AQ{
+		Question:   l.Content,
+		Answer:     l.WholeContent,
+		CreateTime: time.Now().Unix(),
+	}, false)
+	err := db.UpdateRecordInfo(&db.Record{
+		ID:     l.Cs.RecordID,
+		Answer: l.WholeContent,
+		Token:  l.Cs.Token,
+		UserId: l.UserId,
+		Mode:   utils.GetTxtType(db.GetCtxUserInfo(l.Ctx).LLMConfigRaw),
+	})
+	if err != nil {
+		logger.ErrorCtx(l.Ctx, "update record fail", "err", err)
+		return err
+	}
+
+	return nil
+}
+
+func (l *LLM) GetMessages(userId string, prompt string) {
+	msgRecords := db.GetMsgRecord(userId)
+	if msgRecords != nil && l.Cs.UseRecord {
+		if conf.BaseConfInfo.EnableAutoCompress {
+			db.MaybeCompress(l.Ctx, userId, msgRecords,
+				conf.BaseConfInfo.CompressThreshold, conf.BaseConfInfo.CompressKeepPairs,
+				CompressHistory)
+		}
+
+		if msgRecords.Summary != "" {
+			l.LLMClient.GetMessage(openai.ChatMessageRoleSystem,
+				i18n.GetMessage("compress_summary_context", map[string]interface{}{
+					"summary": msgRecords.Summary,
+				}))
+		}
+
+		aqs := db.FilterByMaxContextFromLatest(msgRecords.AQs, param.DefaultContextToken)
+		for i, record := range aqs {
+			if record.Question != "" && record.Answer != "" && record.CreateTime > time.Now().Unix()-int64(conf.BaseConfInfo.ContextExpireTime) {
+				logger.InfoCtx(l.Ctx, "context content", "dialog", i, "question:", record.Question, "answer:", record.Answer)
+				l.LLMClient.GetMessage(openai.ChatMessageRoleUser, record.Question)
+				l.LLMClient.GetMessage(openai.ChatMessageRoleAssistant, record.Answer)
+			}
+		}
+	}
+
+	if len(l.Images) > 0 {
+		l.LLMClient.GetImageMessage(l.Images, prompt)
+	} else {
+		l.LLMClient.GetMessage(openai.ChatMessageRoleUser, prompt)
+	}
+
+}
+
+// CompressHistory summarizes oldSummary + oldAQs into a single condensed summary.
+// It is injected into db.MaybeCompress to avoid a db -> llm import cycle. The call
+// runs synchronously and must not itself load history (UseRecord = false) to avoid
+// recursion.
+func CompressHistory(ctx context.Context, userId, oldSummary string, oldAQs []*db.AQ) (string, error) {
+	var sb strings.Builder
+	if oldSummary != "" {
+		sb.WriteString(oldSummary)
+		sb.WriteString("\n\n")
+	}
+	for _, aq := range oldAQs {
+		if aq.Question != "" {
+			sb.WriteString("Q: " + aq.Question + "\n")
+		}
+		if aq.Answer != "" {
+			sb.WriteString("A: " + aq.Answer + "\n")
+		}
+	}
+
+	prompt := i18n.GetMessage("compress_history_prompt", map[string]interface{}{
+		"history": sb.String(),
+	})
+
+	l := NewLLM(WithUserId(userId), WithContent(prompt), WithContext(ctx))
+	l.Cs.UseRecord = false
+	l.LLMClient.GetModel(l)
+	l.LLMClient.GetMessage(openai.ChatMessageRoleUser, prompt)
+
+	metrics.APIRequestCount.WithLabelValues(l.Model).Inc()
+	summary, err := l.LLMClient.SyncSend(ctx, l)
+	if err != nil {
+		return "", err
+	}
+
+	if l.Cs.Token > 0 {
+		if addErr := db.AddToken(userId, l.Cs.Token); addErr != nil {
+			logger.ErrorCtx(ctx, "compress add token fail", "err", addErr)
+		}
+	}
+
+	return strings.TrimSpace(summary), nil
+}
+
 type Option func(p *LLM)
 
 func WithModel(model string) Option {
@@ -181,9 +350,9 @@ func WithContent(content string) Option {
 	}
 }
 
-func WithHTTPChain(msgChan chan string) Option {
+func WithPerMsgLen(perMsgLen int) Option {
 	return func(p *LLM) {
-		p.HTTPMsgChan = msgChan
+		p.PerMsgLen = perMsgLen
 	}
 }
 
@@ -193,7 +362,13 @@ func WithMessageChan(messageChan chan *param.MsgInfo) Option {
 	}
 }
 
-func WithChatId(chatId int64) Option {
+func WithHTTPMsgChan(messageChan chan string) Option {
+	return func(p *LLM) {
+		p.HTTPMsgChan = messageChan
+	}
+}
+
+func WithChatId(chatId string) Option {
 	return func(p *LLM) {
 		p.ChatId = chatId
 	}
@@ -205,9 +380,21 @@ func WithUserId(userId string) Option {
 	}
 }
 
-func WithMsgId(msgId int) Option {
+func WithMsgId(msgId string) Option {
 	return func(p *LLM) {
 		p.MsgId = msgId
+	}
+}
+
+func WithCS(cs *param.ContextState) Option {
+	return func(p *LLM) {
+		p.Cs = cs
+	}
+}
+
+func WithImages(images [][]byte) Option {
+	return func(p *LLM) {
+		p.Images = images
 	}
 }
 
@@ -227,4 +414,87 @@ func WithTaskTools(taskTool *conf.AgentInfo) Option {
 		p.GeminiTools = taskTool.GeminiTools
 		p.OpenRouterTools = taskTool.OpenRouterTools
 	}
+}
+
+func WithContext(ctx context.Context) Option {
+	return func(p *LLM) {
+		p.Ctx = ctx
+	}
+}
+
+func WithContentParameter(contentParameter map[string]string) Option {
+	return func(p *LLM) {
+		p.ContentParameter = contentParameter
+	}
+}
+
+func (l *LLM) ExecMcpReq(ctx context.Context, funcName string, property map[string]interface{}) (string, error) {
+	mc, err := clients.GetMCPClientByToolName(funcName)
+	if err != nil {
+		logger.ErrorCtx(ctx, "get mcp fail", "err", err, "function", funcName, "argument", property)
+		return "", err
+	}
+
+	metrics.MCPRequestCount.WithLabelValues(mc.Conf.Name, funcName).Inc()
+	startTime := time.Now()
+
+	var toolsData string
+	for i := 0; i < conf.BaseConfInfo.LLMRetryTimes; i++ {
+		toolsData, err = mc.ExecTools(ctx, funcName, property)
+		if err != nil {
+			time.Sleep(time.Duration(conf.BaseConfInfo.LLMRetryInterval) * time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	if err != nil {
+		logger.ErrorCtx(ctx, "get mcp fail", "err", err, "function", funcName, "argument", property)
+		return "", err
+	}
+
+	metrics.MCPRequestDuration.WithLabelValues(mc.Conf.Name, funcName).Observe(time.Since(startTime).Seconds())
+
+	logger.InfoCtx(ctx, "get mcp", "function", funcName, "argument", property, "res", toolsData)
+
+	// 无论 SendMcpRes 是否开启，都检测图片类型并单独发送
+	jsonRegex := regexp.MustCompile(`(\{\s*"type"\s*:[\s\S]*?\})`)
+	imageSent := false
+	for _, match := range jsonRegex.FindAllString(toolsData, -1) {
+		if len(match) < 1 {
+			continue
+		}
+		mcpResp := new(param.MCPResp)
+		if err := json.Unmarshal([]byte(match), mcpResp); err == nil && mcpResp.Type == "image" {
+			markdown := "![image](data:" + mcpResp.MimeType + ";base64," + mcpResp.Data + ")"
+			l.DirectSendMsg(markdown, true)
+			imageSent = true
+			// 图片 base64 不传给 LLM，替换为占位符
+			if !conf.BaseConfInfo.SendMcpMediaToLLM {
+				toolsData = strings.Replace(toolsData, match, "[MCP 返回的 Base64 图像已直接发送给用户]", -1)
+			}
+			break
+		}
+	}
+
+	if conf.BaseConfInfo.SendMcpRes {
+		sendContent := toolsData
+		if !imageSent {
+			// 非图片类型，直接发送原始内容
+			l.DirectSendMsg(i18n.GetMessage("send_mcp_info", map[string]interface{}{
+				"function_name": funcName,
+				"request_args":  property,
+				"response":      sendContent,
+			}), false)
+		} else {
+			// 图片已单独发送，sendContent 已是替换后的内容，发送文字部分
+			l.DirectSendMsg(i18n.GetMessage("send_mcp_info", map[string]interface{}{
+				"function_name": funcName,
+				"request_args":  property,
+				"response":      sendContent,
+			}), false)
+		}
+	}
+
+	return toolsData, nil
 }

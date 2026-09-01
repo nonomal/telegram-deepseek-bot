@@ -6,12 +6,6 @@ set -e
 rm -rf ./output ./release
 mkdir -p ./output ./release
 
-# Check if xgo is installed
-if ! command -v xgo &> /dev/null; then
-    echo "Installing xgo..."
-    go install src.techknowlogick.com/xgo@latest
-fi
-
 # Build the admin binary (locally for the specified platform)
 build_admin_local() {
     local os=$1
@@ -19,43 +13,38 @@ build_admin_local() {
     local ext=""
     [[ "$os" == "windows" ]] && ext=".exe"
 
-    local admin_output="admin-${os}-${arch}${ext}"
-
+    local output_name="MuseBotAdmin"
     echo "=============================="
     echo "Building admin [$os/$arch] using go build..."
     echo "=============================="
-    xgo -out "$admin_output" -targets="$os/$arch" --hooksdir=./admin/shell ./
+
+    GOOS=$os GOARCH=$arch CGO_ENABLED=1 go build -o "./output/${output_name}" ./admin
 }
 
 # Build main binary + package everything
-compile_and_package() {
+compile_and_package_local() {
     local os=$1
     local arch=$2
     local ext=""
     [[ "$os" == "windows" ]] && ext=".exe"
 
     echo "=============================="
-    echo "Building telegram-deepseek-bot [$os/$arch] using xgo..."
+    echo "Building MuseBot [$os/$arch] using go build..."
     echo "=============================="
 
-    # Build the main bot binary
-    xgo -out telegram-deepseek-bot -targets="$os/$arch" .
+    local bot_output="MuseBot"
+
+    # Build main bot binary
+    GOOS=$os GOARCH=$arch CGO_ENABLED=1 go build -o "./output/${bot_output}" ./
 
     # Build admin binary
     build_admin_local $os $arch
-
-    local bot_binary="telegram-deepseek-bot-${os}-${arch}${ext}"
-    local admin_binary="admin-${os}-${arch}${ext}"
-    local release_name="telegram-deepseek-bot-${os}-${arch}.tar.gz"
-
-    # Move compiled binaries to output
-    mv ./telegram-deepseek-bot-${os}* ./output/${bot_binary}
-    mv ./admin-${os}* ./output/${admin_binary}
 
     # Copy config files
     mkdir -p ./output/conf/
     cp -r ./conf/i18n ./output/conf/
     cp -r ./conf/mcp ./output/conf/
+    cp -r ./conf/img ./output/conf/
     mkdir -p ./output/data/
 
     # Copy admin UI files
@@ -63,17 +52,17 @@ compile_and_package() {
     cp -r ./admin/adminui/* ./output/adminui/
 
     # Package everything into a tarball
-    tar zcf "release/${release_name}" -C ./output .
+    local release_name="MuseBot-${os}-${arch}.tar.gz"
+    tar zcf "./release/${release_name}" -C ./output .
 
-    # Clean up intermediate files
-    rm -rf ./output/* ./github.com/*
+    echo "✅ Packaged ${release_name}"
 }
 
-# Platforms to compile (uncomment Windows if needed)
-compile_and_package linux amd64
-compile_and_package darwin amd64
-compile_and_package darwin arm64
-# compile_and_package windows amd64
+# Platforms to compile
+#compile_and_package linux amd64
+#compile_and_package windows amd64
+compile_and_package_local darwin amd64
+compile_and_package_local darwin arm64
 
 # Final cleanup
 rm -rf ./output

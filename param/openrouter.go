@@ -17,9 +17,6 @@ const (
 	GoogleGemma3_12bIt                       = "google/gemma-3-12b-it"
 	GoogleGemma3_27bItFree                   = "google/gemma-3-27b-it:free"
 	GoogleGemma3_27bIt                       = "google/gemma-3-27b-it"
-	GoogleGemini2_0FlashLite001              = "google/gemini-2.0-flash-lite-001"
-	GoogleGemini2_0Flash001                  = "google/gemini-2.0-flash-001"
-	GoogleGemini2_0FlashExpFree              = "google/gemini-2.0-flash-exp:free"
 	GoogleGeminiFlash1_5_8b                  = "google/gemini-flash-1.5-8b"
 	GoogleGemini2_5ProExp03_25               = "google/gemini-2.5-pro-exp-03-25"
 	GoogleGemma2_27bIt                       = "google/gemma-2-27b-it"
@@ -646,9 +643,6 @@ var (
 		GoogleGemma3_12bIt:                       true,
 		GoogleGemma3_27bItFree:                   true,
 		GoogleGemma3_27bIt:                       true,
-		GoogleGemini2_0FlashLite001:              true,
-		GoogleGemini2_0Flash001:                  true,
-		GoogleGemini2_0FlashExpFree:              true,
 		GoogleGeminiFlash1_5_8b:                  true,
 		GoogleGemini2_5ProExp03_25:               true,
 		GoogleGemma2_27bIt:                       true,

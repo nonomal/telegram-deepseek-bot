@@ -16,7 +16,7 @@ func TestInitializeSqlite3Table(t *testing.T) {
 	defer db.Close()
 
 	// 执行初始化
-	err = initializeSqlite3Table(db, "users")
+	err = initializeSqlite3Table(db)
 	if err != nil {
 		t.Errorf("initializeSqlite3Table failed: %v", err)
 	}

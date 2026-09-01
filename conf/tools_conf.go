@@ -6,20 +6,20 @@ import (
 	"os"
 	"sync"
 	"time"
-	
+
 	"github.com/cohesion-org/deepseek-go"
 	"github.com/revrost/go-openrouter"
 	"github.com/sashabaranov/go-openai"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
+	"github.com/yincongcyincong/MuseBot/logger"
 	"github.com/yincongcyincong/mcp-client-go/clients"
 	"github.com/yincongcyincong/mcp-client-go/utils"
-	"github.com/yincongcyincong/telegram-deepseek-bot/logger"
 	"google.golang.org/genai"
 )
 
 type AgentInfo struct {
 	Description string `json:"description"`
-	
+
 	DeepseekTool    []deepseek.Tool   `json:"-"`
 	VolTool         []*model.Tool     `json:"-"`
 	OpenAITools     []openai.Tool     `json:"-"`
@@ -27,28 +27,28 @@ type AgentInfo struct {
 	OpenRouterTools []openrouter.Tool `json:"-"`
 }
 
+type ToolsConf struct {
+	McpConfPath *string `json:"mcp_conf_path"`
+}
+
 var (
-	McpConfPath *string
-	
-	DeepseekTools   = make([]deepseek.Tool, 0)
-	VolTools        = make([]*model.Tool, 0)
-	OpenAITools     = make([]openai.Tool, 0)
-	GeminiTools     = make([]*genai.Tool, 0)
-	OpenRouterTools = make([]openrouter.Tool, 0)
-	
-	TaskTools = sync.Map{}
+	DeepseekTools = make([]deepseek.Tool, 0)
+	VolTools      = make([]*model.Tool, 0)
+	OpenAITools   = make([]openai.Tool, 0)
+	GeminiTools   = make([]*genai.Tool, 0)
+
+	TaskTools     = sync.Map{}
+	ToolsConfInfo = new(ToolsConf)
 )
 
 func InitToolsConf() {
-	McpConfPath = flag.String("mcp_conf_path", "./conf/mcp/mcp.json", "mcp conf path")
+	ToolsConfInfo.McpConfPath = flag.String("mcp_conf_path", GetAbsPath("conf/mcp/mcp.json"), "mcp conf path")
 }
 
 func EnvToolsConf() {
 	if os.Getenv("MCP_CONF_PATH") != "" {
-		*McpConfPath = os.Getenv("MCP_CONF_PATH")
+		*ToolsConfInfo.McpConfPath = os.Getenv("MCP_CONF_PATH")
 	}
-	
-	logger.Info("TOOLS_CONF", "McpConfPath", *McpConfPath)
 }
 
 func InitTools() {
@@ -56,7 +56,7 @@ func InitTools() {
 	defer func() {
 		cancel()
 		var keysToDelete []any
-		
+
 		TaskTools.Range(func(key, value any) bool {
 			aInfo := value.(*AgentInfo)
 			if len(aInfo.DeepseekTool) == 0 || len(aInfo.VolTool) == 0 {
@@ -64,24 +64,24 @@ func InitTools() {
 			}
 			return true
 		})
-		
+
 		for _, key := range keysToDelete {
 			TaskTools.Delete(key)
 		}
 	}()
-	
-	mcpParams, err := clients.InitByConfFile(*McpConfPath)
+
+	mcpParams, err := clients.InitByConfFile(*ToolsConfInfo.McpConfPath)
 	if err != nil {
 		logger.Error("init mcp file fail", "err", err)
 	}
-	
+
 	errs := clients.RegisterMCPClient(ctx, mcpParams)
 	if len(errs) > 0 {
 		for mcpServer, err := range errs {
 			logger.Error("register mcp client error", "server", mcpServer, "error", err)
 		}
 	}
-	
+
 	for _, mcpParam := range mcpParams {
 		InsertTools(mcpParam.Name)
 	}
@@ -97,15 +97,14 @@ func InsertTools(clientName string) {
 		oaTools := utils.TransToolsToChatGPTFunctionCall(c.Tools)
 		gmTools := utils.TransToolsToGeminiFunctionCall(c.Tools)
 		orTools := utils.TransToolsToOpenRouterFunctionCall(c.Tools)
-		
-		if *BaseConfInfo.UseTools {
+
+		if BaseConfInfo.UseTools {
 			DeepseekTools = append(DeepseekTools, dpTools...)
 			VolTools = append(VolTools, volTools...)
 			OpenAITools = append(OpenAITools, oaTools...)
 			GeminiTools = append(GeminiTools, gmTools...)
-			OpenRouterTools = append(OpenRouterTools, orTools...)
 		}
-		
+
 		if c.Conf.Description != "" {
 			TaskTools.Store(clientName, &AgentInfo{
 				Description:     c.Conf.Description,
